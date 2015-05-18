@@ -2,24 +2,20 @@ from cloudflarenetwork import CloudFlareNetwork
 from descriptor.mxrecords import MxRecords
 from descriptor.pagetitle import PageTitle
 from target import Target
-from panels import PANELS
 
 
 class CloudBuster:
 
     def __init__(self, domain):
         self.domain = domain
-        self.targets = {
+        self.target = {
             'main': None,
-            'subdomains': [],
-            'panels': [],
-            'mxs': []
+            'other': []
         }
-        self.crimeflare_ip = None
 
     def resolving(self):
-        if self.targets['main']:
-            if self.targets['main'].ip:
+        if self.target['main']:
+            if self.target['main'].ip:
                 return True
 
         return False
@@ -29,139 +25,95 @@ class CloudBuster:
         print(net.in_range(ip))
 
     def scan_main(self):
-        target = Target(
-            name='target',
-            domain=self.domain
-        )
+        target = Target(self.domain, 'target')
         target.print_infos()
-        self.targets['main'] = target
+        self.target['main'] = target
 
     def protected(self):
-        if not self.targets['main'] or type(self.targets['main']) != Target:
+        if not self.target['main'] or type(self.target['main']) != Target:
             return False
 
-        return self.targets['main'].protected
+        return self.target['main'].protected
 
-    def scan_subdomains(self, subdomains=None):
-        subs = [sub for sub in open('lists/subdomains').read().splitlines()]
-
+    def scan_subdomains(self, subdomains=None, dept=None):
         if subdomains:
-            for sub2scan in subdomains:
-                if sub2scan not in subs:
-                    subs.append(sub2scan)
+            toscan = subdomains
+        else:
+            toscan = open('lists/subdomains').read().splitlines()
+            if dept:
+                del toscan[dept:]
 
-        for sub in subs:
-            if not subdomains or sub in subdomains:
-                subdomain = sub+'.'+self.domain
-                target = Target(
-                    name='subdomain',
-                    domain=subdomain,
-                    timeout=5
-                )
-                target.print_infos()
-                self.targets['subdomains'].append(target)
+        targets = [
+            Target(sub+'.'+self.domain, 'subdomain', timeout=5)
+            for sub in toscan
+        ]
 
-    def scan_panels(self, panels=None):
+        return self.scan(targets)
 
-        for panel in PANELS:
-            if not panels or panel['name'] in panels:
-                target = Target(
-                    name=panel['name']+':'+str(panel['port']),
-                    domain=self.domain,
-                    port=panel['port'],
-                    timeout=2,
-                    ssl=panel['ssl']
-
-                )
-                target.print_infos()
-                self.targets['panels'].append(target)
-
-    def search_crimeflare(self):
+    def scan_crimeflare(self):
         for line in open('lists/ipout'):
             if self.domain in line:
-                self.crimeflare_ip = line.partition(' ')[2].rstrip()
-                return
+                crimeflare_ip = line.partition(' ')[2].rstrip()
+                return self.scan([Target(crimeflare_ip, 'crimeflare')])
 
-    def scan_mx_records(self):
-
+    def scan_mxs(self):
         mxs = MxRecords(self.domain).__get__()
-        if not mxs:
-            return
+        if mxs:
+            targets = [
+                Target(mx, 'mx', timeout=1)
+                for mx in mxs
+            ]
+            return self.scan(targets)
 
-        for mx in mxs:
-            target = Target(
-                name='mx',
-                domain=mx,
-                timeout=1
-            )
+    def scan(self, targets):
+        for target in targets:
             target.print_infos()
-            self.targets['mxs'].append(target)
+            if self.is_interesting(target):
+                self.target['other'].append(target)
+                if self.match(target):
+                    return target
+        return None
 
-    def print_infos(self):
-        print('[SCAN SUMARY]')
+    def is_interesting(self, target):
+        return target.ip and not target.protected
 
-        if self.targets['main']:
-            print('Target: '+self.targets['main'].domain)
-            print('> ip: '+str(self.targets['main'].ip))
-            print('> protected: '+str(self.targets['main'].protected))
+    def match(self, possible_target):
+        main_target = self.target['main']
 
-        print('[found ips]')
+        main_target.title = PageTitle(
+            'http://'+main_target.domain
+        ).__get__()
+
+        possible_target.title = PageTitle(
+            'http://'+possible_target.ip,
+            main_target.domain
+        ).__get__()
+
+        return main_target.title == possible_target.title
+
+    def scan_summary(self):
+        print('[SCAN SUMMARY]')
+
+        if self.target['main']:
+            print('Target: '+self.target['main'].domain)
+            print('> ip: '+str(self.target['main'].ip))
+            print('> protected: '+str(self.target['main'].protected))
+
+        print('[interesting ips]')
 
         for host in self.list_interesting_hosts():
             print(host['ip']+' > '+host['description'])
 
-    def match_results(self):
-        print('[analysing results]')
-
-        if not self.targets['main'].protected:
-            print('>> NOT BEHIND CLOUDFLARE <<')
-            return
-
-        target_title = PageTitle(
-            'http://'+self.targets['main'].domain
-        ).__get__()
-        print('target title > '+str(target_title))
-
-        if target_title:
-            prev_ip = None
-
-            for host in self.list_interesting_hosts():
-                if prev_ip != host['ip']:
-                    print('scanning > '+host['ip'])
-                    prev_ip = host['ip']
-
-                    title = PageTitle(
-                        'http://'+host['ip'],
-                        self.targets['main'].domain
-                    ).__get__()
-
-                    if title == target_title:
-                        print('>> CONFIRMED <<')
-                        print('> ip: '+host['ip'])
-                        print('> title: '+str(title))
-                        return
-
-        print('>> UNABLE TO CONFIRM <<')
-
     def list_interesting_hosts(self):
         hosts = []
-        targets = self.targets['subdomains'] \
-            + self.targets['panels'] \
-            + self.targets['mxs']
+        targets = self.target['other']
 
         for target in targets:
-            if target.ip and not target.protected \
+            if self.is_interesting(target) \
                     and target.status and target.status != 400:
                 hosts.append({
                     'ip': target.ip,
                     'description': target.domain+' / '+target.name
                 })
-
-        if self.crimeflare_ip:
-            hosts.append({
-                'ip': self.crimeflare_ip,
-                'description': self.targets['main'].domain
-                + ' / from crimeflare.com db'
-            })
 
         return hosts

@@ -11,30 +11,42 @@ def scan(args):
         print('>> NOT FOUND <<')
         return
 
-    if buster.protected():
-        if 'subdomains' in args.scan:
-            if args.sub:
-                buster.scan_subdomains(args.sub)
-            else:
-                buster.scan_subdomains()
+    if not buster.protected():
+        print('>> NOT BEHIND CLOUDFLARE <<')
+        return
 
-        # TODO : Make this useful, cause it's not solving anything
-        if 'panels' in args.scan:
-            if args.pan:
-                buster.scan_panels(args.pan)
-            else:
-                buster.scan_panels()
+    if 'crimeflare' in args.scan:
+        target_found = buster.scan_crimeflare()
 
-        if 'crimeflare' in args.scan:
-            buster.search_crimeflare()
+        if target_found:
+            print('>> MATCH <<')
+            return
 
-        if 'mx' in args.scan:
-            buster.scan_mx_records()
+    if 'mx' in args.scan:
+        target_found = buster.scan_mxs()
 
-    if buster.protected():
-        buster.print_infos()
+        if target_found:
+            print('>> MATCH <<')
+            return
 
-    buster.match_results()
+    if 'subdomains' in args.scan:
+        dept = {
+            'simple': int(30),
+            'normal': int(100),
+            'full': None
+        }
+
+        target_found = buster.scan_subdomains(
+            args.sub if args.sub else None,
+            dept[args.dept]
+        )
+
+        if target_found:
+            print('>> MATCH <<')
+            return
+
+    buster.scan_summary()
+    print('>> UNABLE TO CONFIRM <<')
 
 
 def scan_list(args):
